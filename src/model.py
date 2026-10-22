@@ -118,7 +118,7 @@ def train_and_evaluate(
 
     # --- Evaluate ---------------------------------------------------------
     y_pred = clf.predict(X_test)
-    cm = confusion_matrix(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
 

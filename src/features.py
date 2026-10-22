@@ -25,21 +25,22 @@ FEATURE_NAMES = [
 ]
 
 # Ports considered "normal" for web traffic.
-_STANDARD_PORTS = {80, 443, 8080, 8443, ""}
+_STANDARD_PORTS = {80, 443, 8080, 8443}
 
 # Regex that matches an IPv4 address.
 _IPV4_RE = re.compile(
     r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$"
 )
 
-# Regex that roughly matches an IPv6 address (including bracket-wrapped).
-_IPV6_RE = re.compile(r"^\[?[0-9a-fA-F:]+\]?$")
+# Regex that roughly matches an IPv6 address.  It must contain at least one
+# colon, otherwise hex-only hostnames such as "cafe" would be misdetected.
+_IPV6_RE = re.compile(r"^\[?[0-9a-fA-F]*:[0-9a-fA-F:.]*\]?$")
 
 # Characters considered "special" in a URL (excluding dot, hyphen, digits, letters).
 _SPECIAL_CHARS_RE = re.compile(r"[^a-zA-Z0-9.\-]")
 
 
-def _safe_parse(url: str) -> urlparse:
+def _safe_parse(url: str):
     """Parse a URL, prepending a scheme if absent so urlparse works correctly."""
     url = url.strip()
     if not url:
@@ -66,11 +67,19 @@ def extract_features(url: str) -> list[float]:
     if not isinstance(url, str) or not url.strip():
         return [0.0] * len(FEATURE_NAMES)
 
-    parsed = _safe_parse(url)
-    hostname = (parsed.hostname or "").lower()
-    path = parsed.path or ""
-    query = parsed.query or ""
     raw = url.strip()
+
+    # Malformed URLs (bad IPv6 brackets, ...) make urlparse raise ValueError.
+    try:
+        parsed = _safe_parse(raw)
+        hostname = (parsed.hostname or "").lower()
+    except ValueError:
+        parsed = None
+        hostname = ""
+
+    path = (parsed.path or "") if parsed else ""
+    query = (parsed.query or "") if parsed else ""
+    scheme = (parsed.scheme or "").lower() if parsed else ""
 
     url_length = float(len(raw))
     hostname_length = float(len(hostname))
@@ -86,7 +95,7 @@ def extract_features(url: str) -> list[float]:
     num_special = float(len(_SPECIAL_CHARS_RE.findall(raw)))
     num_at = float(raw.count("@"))
     is_ip = 1.0 if _is_ip_hostname(hostname) else 0.0
-    is_https = 1.0 if parsed.scheme.lower() == "https" else 0.0
+    is_https = 1.0 if scheme == "https" else 0.0
 
     # Path separators (exclude the leading /)
     num_path_sep = float(max(path.count("/") - 1, 0)) if path else 0.0
@@ -97,8 +106,11 @@ def extract_features(url: str) -> list[float]:
     except Exception:
         num_qparams = 0.0
 
-    # Unusual port
-    port = parsed.port  # None when no explicit port
+    # Unusual port (``.port`` raises ValueError for out-of-range / non-numeric ports)
+    try:
+        port = parsed.port if parsed else None
+    except ValueError:
+        port = -1  # an invalid port is itself unusual
     if port is None:
         has_unusual_port = 0.0
     else:

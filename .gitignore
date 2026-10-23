@@ -16,10 +16,14 @@ build/
 *.swp
 *.swo
 
-# Models and results (large / generated)
+# Models and results
 models/*.joblib
+!models/model.joblib
+!models/quantum_model.joblib
 results/*.csv
 results/*.json
+!results/metrics.json
+!results/quantum_metrics.json
 
 # OS
 .DS_Store
@@ -28,3 +32,5 @@ Thumbs.db
 # Data (user-supplied datasets may be large)
 data/*.csv
 !data/sample_urls.csv
+
+.vercel

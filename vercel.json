@@ -1,0 +1,8 @@
+{
+  "cleanUrls": true,
+  "functions": {
+    "api/*.py": {
+      "includeFiles": "src/**,models/**,results/**"
+    }
+  }
+}

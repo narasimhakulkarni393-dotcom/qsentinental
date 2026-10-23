@@ -1,0 +1,5 @@
+url,label,prediction
+https://www.amazon.com/dp/B08N5WRWNW,0,0
+https://en.wikipedia.org/wiki/Phishing,0,0
+http://paypa1-verify.com/signin?id=12345&token=abc,1,1
+http://free-iphone-winner.com/claim-prize-now.php,1,1

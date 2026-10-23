@@ -1,0 +1,18 @@
+{
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0,
+  "false_positive_rate": 0.0,
+  "confusion_matrix": [
+    [
+      2,
+      0
+    ],
+    [
+      0,
+      2
+    ]
+  ],
+  "num_train": 16,
+  "num_test": 4
+}

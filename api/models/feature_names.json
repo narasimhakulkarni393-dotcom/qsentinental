@@ -1,15 +1,27 @@
 [
   "url_length",
   "hostname_length",
+  "path_length",
+  "query_length",
   "num_dots",
   "num_subdomains",
   "num_hyphens",
+  "hyphen_in_domain",
   "num_digits",
+  "digit_ratio_url",
+  "digit_ratio_domain",
   "num_special_chars",
   "num_at_symbols",
   "is_ip_address",
   "is_https",
+  "has_unusual_port",
+  "has_punycode",
   "num_path_separators",
   "num_query_params",
-  "has_unusual_port"
+  "has_double_slash_path",
+  "entropy_url",
+  "entropy_domain",
+  "has_suspicious_tld",
+  "num_sensitive_keywords",
+  "has_brand_in_subdomain"
 ]

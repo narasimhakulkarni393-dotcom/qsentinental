@@ -1,18 +1,31 @@
 {
-  "precision": 1.0,
-  "recall": 1.0,
-  "f1": 1.0,
-  "false_positive_rate": 0.0,
+  "model_type": "lightgbm",
+  "split_mode": "domain_disjoint",
+  "threshold": 0.83,
+  "recall": 0.9917,
+  "recall_phishing": 0.9917,
+  "precision": 0.9997,
+  "f1": 0.9957,
+  "f2": 0.9933,
+  "false_positive_rate": 0.0002,
+  "false_negatives": 26,
+  "false_positives": 1,
+  "true_positives": 3107,
+  "true_negatives": 4789,
+  "roc_auc": 0.9978,
+  "pr_auc": 0.9982,
   "confusion_matrix": [
     [
-      2,
-      0
+      4789,
+      1
     ],
     [
-      0,
-      2
+      26,
+      3107
     ]
   ],
-  "num_train": 16,
-  "num_test": 4
+  "num_train": 28075,
+  "num_val": 3994,
+  "num_test": 7923,
+  "inference_latency_ms": 0.005
 }

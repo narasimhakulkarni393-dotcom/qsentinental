@@ -22,10 +22,13 @@ try:
 except Exception as e:
     IMPORT_ERROR = str(e)
     FEATURE_NAMES = [
-        "url_length", "hostname_length", "num_dots", "num_subdomains",
-        "num_hyphens", "num_digits", "num_special_chars", "num_at_symbols",
-        "is_ip_address", "is_https", "num_path_separators", "num_query_params",
-        "has_unusual_port"
+        "url_length", "hostname_length", "path_length", "query_length",
+        "num_dots", "num_subdomains", "num_hyphens", "hyphen_in_domain",
+        "num_digits", "digit_ratio_url", "digit_ratio_domain", "num_special_chars",
+        "num_at_symbols", "is_ip_address", "is_https", "has_unusual_port",
+        "has_punycode", "num_path_separators", "num_query_params",
+        "has_double_slash_path", "entropy_url", "entropy_domain",
+        "has_suspicious_tld", "num_sensitive_keywords", "has_brand_in_subdomain"
     ]
     extract_features = None
     load_model = None
@@ -95,7 +98,34 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
             "description": "Presence of '@' can be used to obfuscate the real host authority in browser address bars."
         })
 
-    # 5. Suspicious keywords in host or path
+    # 5. Brand Spoofing in Subdomain
+    if feats.get("has_brand_in_subdomain", 0) == 1.0:
+        evidence.append({
+            "feature": "has_brand_in_subdomain",
+            "severity": "critical",
+            "title": "Subdomain Brand Spoofing Detected",
+            "description": "Target contains a high-profile brand name inside the subdomain while registered on a different domain."
+        })
+
+    # 6. Suspicious TLD
+    if feats.get("has_suspicious_tld", 0) == 1.0:
+        evidence.append({
+            "feature": "has_suspicious_tld",
+            "severity": "high",
+            "title": "High-Abuse Top-Level Domain",
+            "description": "Domain is registered under a TLD with statistically elevated phishing rates (e.g., .tk, .top, .xyz, .cf)."
+        })
+
+    # 7. Punycode / Homograph (IDN)
+    if feats.get("has_punycode", 0) == 1.0:
+        evidence.append({
+            "feature": "has_punycode",
+            "severity": "warning",
+            "title": "IDN / Punycode Characters",
+            "description": "Domain contains Punycode ('xn--') or non-ASCII characters, which may be an IDN homograph attack."
+        })
+
+    # 8. Suspicious keywords in host or path
     lower_url = url.lower()
     keywords = ["login", "signin", "verify", "secure", "update", "account", "banking", "billing", "oauth", "password", "wallet", "token"]
     matched = [kw for kw in keywords if kw in lower_url]
@@ -107,7 +137,7 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
             "description": f"Contains security-sensitive lure keywords: {', '.join(matched[:4])}"
         })
 
-    # 6. HTTP Scheme (lack of TLS)
+    # 9. HTTP Scheme (lack of TLS)
     if feats.get("is_https", 1) == 0.0:
         evidence.append({
             "feature": "is_https",
@@ -116,14 +146,22 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
             "description": "Traffic is unencrypted (HTTP). While not strictly proof of malice, legitimate auth forms require HTTPS."
         })
         
-    # 7. URL Length
+    # 10. URL Length & High Entropy
     url_len = feats.get("url_length", 0)
+    entropy = feats.get("entropy_url", 0.0)
     if url_len > 75:
         evidence.append({
             "feature": "url_length",
             "severity": "info",
             "title": "Excessive URL Length",
             "description": f"Total character length is {int(url_len)} chars (elevated length is typical of obfuscated redirect payloads)."
+        })
+    if entropy > 4.5:
+        evidence.append({
+            "feature": "entropy_url",
+            "severity": "info",
+            "title": "Elevated Shannon Entropy",
+            "description": f"URL exhibits high randomness ({entropy:.2f} bits), indicating encoded, tokenized, or randomized payloads."
         })
 
     return evidence
@@ -155,7 +193,7 @@ def get_threat_intelligence(url: str) -> dict:
                     "type": "domain",
                     "threat_type": "Credential Phishing / Impersonation Campaign",
                     "confidence": "High",
-                    "last_seen": "2026-10-22"
+                    "last_seen": "2026-10-27"
                 }
             ]
         }
@@ -188,11 +226,19 @@ def perform_full_scan(url: str) -> dict:
     # Classical prediction
     prob_classical = 0.5
     classical_label = 0
+    threshold = 0.5
+    model_name = "LightGBM"
+
     if clf_bundle and clf_bundle is not False and predict_url:
         try:
-            c_res = predict_url(clean_url, clf=clf_bundle[0], scaler=clf_bundle[1])
+            threshold = getattr(clf_bundle, "threshold", 0.5)
+            clf = getattr(clf_bundle, "clf", clf_bundle[0])
+            scaler = getattr(clf_bundle, "scaler", clf_bundle[1])
+            c_res = predict_url(clean_url, clf=clf, scaler=scaler, threshold=threshold)
             prob_classical = c_res.get("probability_phishing", 0.5)
             classical_label = c_res.get("label", 0)
+            meta = getattr(clf_bundle, "metadata", {}) or {}
+            model_name = meta.get("model_type", "LightGBM").upper()
         except Exception:
             prob_classical = 0.5
     else:
@@ -202,6 +248,7 @@ def perform_full_scan(url: str) -> dict:
         if feats.get("num_dots", 0) >= 3: score += 0.2
         if feats.get("has_unusual_port", 0) == 1.0: score += 0.25
         if feats.get("is_https", 1) == 0.0: score += 0.15
+        if feats.get("has_brand_in_subdomain", 0) == 1.0: score += 0.35
         prob_classical = min(score, 0.95)
         classical_label = 1 if prob_classical >= 0.5 else 0
 
@@ -217,51 +264,61 @@ def perform_full_scan(url: str) -> dict:
             prob_quantum = prob_classical
             quantum_label = classical_label
 
-    # Composite Ensemble Risk Score
-    composite_prob = float(0.6 * prob_classical + 0.4 * prob_quantum)
+    # Composite Ensemble Risk Score (calibrated primary + quantum check)
+    composite_prob = float(0.80 * prob_classical + 0.20 * prob_quantum)
 
     # Threat Intel check
     threat_intel = get_threat_intelligence(clean_url)
     if threat_intel.get("status") == "flagged":
-        composite_prob = max(composite_prob, 0.96)
+        composite_prob = max(composite_prob, 0.98)
 
-    # Classify Risk Level
-    if composite_prob >= 0.85:
-        risk_level = "critical"
-        prediction_text = "Phishing Detected"
-    elif composite_prob >= 0.50:
-        risk_level = "high"
-        prediction_text = "Suspicious URL"
-    elif composite_prob >= 0.25:
-        risk_level = "medium"
-        prediction_text = "Low Risk"
+    # Verdict calibrated
+    is_phishing = (prob_classical >= threshold) or (composite_prob >= threshold) or (threat_intel.get("status") == "flagged")
+
+    if is_phishing:
+        if composite_prob >= 0.80 or threat_intel.get("status") == "flagged":
+            risk_level = "critical"
+            prediction_text = "Phishing Detected (High Confidence)"
+        else:
+            risk_level = "high"
+            prediction_text = "Phishing Suspected"
     else:
-        risk_level = "low"
-        prediction_text = "Likely Legitimate"
+        if composite_prob >= 0.35:
+            risk_level = "medium"
+            prediction_text = "Low Risk / Unverified"
+        else:
+            risk_level = "low"
+            prediction_text = "Likely Legitimate"
 
     evidence = analyze_url_heuristics(clean_url, feats)
 
     return {
         "input_valid": True,
         "url": clean_url,
-        "prediction": "phishing" if composite_prob >= 0.5 else "legitimate",
+        "prediction": "phishing" if is_phishing else "legitimate",
         "prediction_text": prediction_text,
         "risk_level": risk_level,
-        "model_version": "q-sentinel-v1.2-hybrid-vqc-rf",
-        "confidence": round(composite_prob if composite_prob >= 0.5 else (1.0 - composite_prob), 4),
+        "model_version": f"q-sentinel-v2.0-hybrid-{model_name.lower()}-vqc",
+        "threshold_used": round(threshold, 3),
+        "confidence": round(composite_prob if is_phishing else (1.0 - composite_prob), 4),
         "risk_score_pct": round(composite_prob * 100, 1),
         "probabilities": {
             "classical_rf_phishing": round(float(prob_classical), 4),
+            "classical_phishing": round(float(prob_classical), 4),
             "quantum_vqc_phishing": round(float(prob_quantum), 4),
             "composite_phishing": round(composite_prob, 4),
             "legitimate": round(1.0 - composite_prob, 4)
+        },
+        "model_types": {
+            "classical": model_name,
+            "quantum": "4-Qubit Variational Quantum Classifier (Statevector Sim)"
         },
         "ml_evidence": evidence,
         "threat_intelligence": threat_intel,
         "features": {k: round(v, 2) if isinstance(v, float) else v for k, v in feats.items()},
         "limitations": [
             "Purely non-intrusive lexical/structural inspection. No active HTTP probes or DNS resolution performed to prevent SSRF risks.",
-            "Predictions reflect statistical model probabilities and known threat signatures; always verify sensitive credentials independently."
+            "Predictions reflect statistical model probabilities trained on URL lexical structures; always verify sensitive credentials independently."
         ]
     }
 
@@ -294,41 +351,60 @@ class handler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "healthy",
                 "service": "Q-Sentinel Threat Engine",
-                "version": "1.2.0",
+                "version": "2.0.0",
+                "dataset": "PhiUSIIL Phishing URL Websites Dataset (v1.0)",
                 "models": {
-                    "classical_rf": clf is not None and clf is not False,
+                    "classical_pipeline": clf is not None and clf is not False,
                     "quantum_vqc": q_b is not None and q_b is not False
                 }
             })
             return
 
         if path in ("/api/metrics", "/api/metrics/"):
-            metrics_path = ROOT_DIR / "results" / "metrics.json"
-            q_metrics_path = ROOT_DIR / "results" / "quantum_metrics.json"
+            m_paths = [CURRENT_DIR / "results" / "metrics.json", ROOT_DIR / "results" / "metrics.json"]
+            q_paths = [CURRENT_DIR / "results" / "quantum_metrics.json", ROOT_DIR / "results" / "quantum_metrics.json"]
+            b_paths = [CURRENT_DIR / "results" / "benchmark_comparison.json", ROOT_DIR / "results" / "benchmark_comparison.json"]
             
             c_metrics = {}
             q_metrics = {}
-            if metrics_path.is_file():
-                try:
-                    c_metrics = json.loads(metrics_path.read_text())
-                except Exception:
-                    pass
-            if q_metrics_path.is_file():
-                try:
-                    q_metrics = json.loads(q_metrics_path.read_text())
-                except Exception:
-                    pass
+            b_metrics = {}
+
+            for p in m_paths:
+                if p.is_file():
+                    try:
+                        c_metrics = json.loads(p.read_text())
+                        break
+                    except Exception:
+                        pass
+
+            for p in q_paths:
+                if p.is_file():
+                    try:
+                        q_metrics = json.loads(p.read_text())
+                        break
+                    except Exception:
+                        pass
+
+            for p in b_paths:
+                if p.is_file():
+                    try:
+                        b_metrics = json.loads(p.read_text())
+                        break
+                    except Exception:
+                        pass
 
             self._send_json({
                 "classical": c_metrics,
                 "quantum": q_metrics,
+                "benchmark": b_metrics,
                 "features": FEATURE_NAMES
             })
             return
 
         # Default info endpoint
         self._send_json({
-            "message": "Q-Sentinel Hybrid Quantum-Classical Detection API",
+            "message": "Q-Sentinel Hybrid Quantum-Classical Detection API v2.0",
+            "dataset": "PhiUSIIL Phishing URL Websites Dataset",
             "endpoints": [
                 "POST /api/scan (body: {\"url\": \"...\"})",
                 "POST /api/batch (body: {\"urls\": [\"...\"]})",

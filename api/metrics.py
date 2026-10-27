@@ -5,25 +5,43 @@ from api.index import ROOT_DIR, FEATURE_NAMES
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        metrics_path = ROOT_DIR / "results" / "metrics.json"
-        q_metrics_path = ROOT_DIR / "results" / "quantum_metrics.json"
+        curr_dir = Path(__file__).resolve().parent
+        m_paths = [curr_dir / "results" / "metrics.json", ROOT_DIR / "results" / "metrics.json"]
+        q_paths = [curr_dir / "results" / "quantum_metrics.json", ROOT_DIR / "results" / "quantum_metrics.json"]
+        b_paths = [curr_dir / "results" / "benchmark_comparison.json", ROOT_DIR / "results" / "benchmark_comparison.json"]
         
         c_metrics = {}
         q_metrics = {}
-        if metrics_path.is_file():
-            try:
-                c_metrics = json.loads(metrics_path.read_text())
-            except Exception:
-                pass
-        if q_metrics_path.is_file():
-            try:
-                q_metrics = json.loads(q_metrics_path.read_text())
-            except Exception:
-                pass
+        b_metrics = {}
+
+        for p in m_paths:
+            if p.is_file():
+                try:
+                    c_metrics = json.loads(p.read_text())
+                    break
+                except Exception:
+                    pass
+
+        for p in q_paths:
+            if p.is_file():
+                try:
+                    q_metrics = json.loads(p.read_text())
+                    break
+                except Exception:
+                    pass
+
+        for p in b_paths:
+            if p.is_file():
+                try:
+                    b_metrics = json.loads(p.read_text())
+                    break
+                except Exception:
+                    pass
 
         res_body = json.dumps({
             "classical": c_metrics,
             "quantum": q_metrics,
+            "benchmark": b_metrics,
             "features": FEATURE_NAMES
         }, indent=2).encode("utf-8")
 

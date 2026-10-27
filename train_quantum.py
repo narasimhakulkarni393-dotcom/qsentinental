@@ -67,7 +67,7 @@ def main() -> None:
     print()
     print(m["classification_report"])
     print("=" * 60)
-    print("  Done. Run:  streamlit run app.py   ->  ⚛️ Quantum Lab")
+    print("  Done. Run:  streamlit run app.py   ->  Quantum Lab")
     print("=" * 60)
 
 

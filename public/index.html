@@ -135,7 +135,7 @@
       <!-- Hero Headline Banner -->
       <div class="text-center max-w-3xl mx-auto space-y-3 pt-2">
         <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono bg-purple-950/40 text-purple-300 border border-purple-800/50 mb-1">
-          <i class="fa-solid fa-microchip"></i> Dual-Engine: Classical Random Forest + Variational Quantum Circuit
+          <i class="fa-solid fa-microchip"></i> Dual-Engine: Classical LightGBM (Calibrated) + Variational Quantum Circuit
         </div>
         <h1 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-100">
           Proactive <span class="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-sky-300 to-purple-400">Cyber Intelligence</span> Against Phishing
@@ -235,7 +235,7 @@
           <div class="mt-6 pt-6 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
             <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800">
               <div class="flex justify-between items-center text-slate-400 mb-1">
-                <span><i class="fa-solid fa-tree text-cyan-400 mr-1.5"></i> Classical Random Forest</span>
+                <span id="classical-engine-label"><i class="fa-solid fa-bolt text-cyan-400 mr-1.5"></i> Classical LightGBM (Calibrated)</span>
                 <span id="rf-prob" class="font-bold text-cyan-400">0%</span>
               </div>
               <div class="w-full bg-slate-800 rounded-full h-2">
@@ -432,46 +432,141 @@
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 font-mono">
           <div class="bg-slate-900/70 p-4 rounded-xl border border-cyan-500/20">
             <span class="text-xs text-slate-400">PRECISION</span>
-            <div id="metric-precision" class="text-2xl font-black text-cyan-400 mt-1">1.000</div>
+            <div id="metric-precision" class="text-2xl font-black text-cyan-400 mt-1">0.9997</div>
             <span class="text-[10px] text-slate-500">TP / (TP + FP)</span>
           </div>
           <div class="bg-slate-900/70 p-4 rounded-xl border border-purple-500/20">
             <span class="text-xs text-slate-400">RECALL</span>
-            <div id="metric-recall" class="text-2xl font-black text-purple-400 mt-1">1.000</div>
+            <div id="metric-recall" class="text-2xl font-black text-purple-400 mt-1">0.9917</div>
             <span class="text-[10px] text-slate-500">TP / (TP + FN)</span>
           </div>
           <div class="bg-slate-900/70 p-4 rounded-xl border border-emerald-500/20">
             <span class="text-xs text-slate-400">F1-SCORE</span>
-            <div id="metric-f1" class="text-2xl font-black text-emerald-400 mt-1">1.000</div>
+            <div id="metric-f1" class="text-2xl font-black text-emerald-400 mt-1">0.9957</div>
             <span class="text-[10px] text-slate-500">Harmonic Mean</span>
           </div>
           <div class="bg-slate-900/70 p-4 rounded-xl border border-rose-500/20">
             <span class="text-xs text-slate-400">FALSE POSITIVE RATE</span>
-            <div id="metric-fpr" class="text-2xl font-black text-rose-400 mt-1">0.000</div>
+            <div id="metric-fpr" class="text-2xl font-black text-rose-400 mt-1">0.0002</div>
             <span class="text-[10px] text-slate-500">FP / (FP + TN)</span>
           </div>
         </div>
 
         <!-- Confusion Matrix Display -->
         <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4">
-          <h3 class="text-sm font-bold text-slate-300 font-mono uppercase">Held-Out Test Set Confusion Matrix</h3>
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <h3 class="text-sm font-bold text-slate-300 font-mono uppercase">Held-Out Test Set Confusion Matrix</h3>
+            <span class="text-xs font-mono text-purple-300">Domain-Disjoint Split (7,923 unseen domain URLs)</span>
+          </div>
           <div class="max-w-md mx-auto grid grid-cols-2 gap-3 text-center font-mono">
             <div class="p-4 rounded-lg bg-emerald-950/40 border border-emerald-800/40">
               <span class="text-xs text-emerald-400">TRUE NEGATIVE (Legitimate)</span>
-              <div id="cm-tn" class="text-2xl font-bold text-slate-100 mt-1">2</div>
+              <div id="cm-tn" class="text-2xl font-bold text-slate-100 mt-1">4789</div>
             </div>
             <div class="p-4 rounded-lg bg-slate-900/60 border border-slate-800">
               <span class="text-xs text-slate-400">FALSE POSITIVE (Type I)</span>
-              <div id="cm-fp" class="text-2xl font-bold text-slate-100 mt-1">0</div>
+              <div id="cm-fp" class="text-2xl font-bold text-slate-100 mt-1">1</div>
             </div>
             <div class="p-4 rounded-lg bg-slate-900/60 border border-slate-800">
               <span class="text-xs text-slate-400">FALSE NEGATIVE (Type II)</span>
-              <div id="cm-fn" class="text-2xl font-bold text-slate-100 mt-1">0</div>
+              <div id="cm-fn" class="text-2xl font-bold text-slate-100 mt-1">26</div>
             </div>
             <div class="p-4 rounded-lg bg-rose-950/40 border border-rose-800/40">
               <span class="text-xs text-rose-400">TRUE POSITIVE (Phishing)</span>
-              <div id="cm-tp" class="text-2xl font-bold text-slate-100 mt-1">2</div>
+              <div id="cm-tp" class="text-2xl font-bold text-slate-100 mt-1">3107</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Architecture & Split Strategy Benchmark Table -->
+        <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold text-slate-200 font-mono uppercase">Architecture & Split Strategy Benchmark</h3>
+              <p class="text-xs text-slate-400">Trained and validated on 40,000 URLs from the PhiUSIIL Phishing Websites Dataset.</p>
+            </div>
+            <span class="px-2.5 py-1 text-xs font-mono rounded bg-cyan-950 text-cyan-300 border border-cyan-800">Evaluated on Held-Out Test Data</span>
+          </div>
+
+          <div class="overflow-x-auto rounded-lg border border-slate-800">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase">
+                <tr>
+                  <th class="p-3">Split Strategy</th>
+                  <th class="p-3">Model Architecture</th>
+                  <th class="p-3 text-cyan-400">Phishing Recall</th>
+                  <th class="p-3">Precision</th>
+                  <th class="p-3">F1-Score</th>
+                  <th class="p-3 text-rose-400">FPR</th>
+                  <th class="p-3">Latency</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/60 bg-slate-900/40">
+                <tr class="bg-cyan-950/20">
+                  <td class="p-3 font-semibold text-purple-300">Domain-Disjoint</td>
+                  <td class="p-3 font-bold text-cyan-300"><i class="fa-solid fa-bolt text-cyan-400 mr-1"></i> LightGBM (Production)</td>
+                  <td class="p-3 font-bold text-emerald-400">99.17%</td>
+                  <td class="p-3">99.97%</td>
+                  <td class="p-3">0.9957</td>
+                  <td class="p-3">0.02%</td>
+                  <td class="p-3 text-slate-400">0.01 ms</td>
+                </tr>
+                <tr>
+                  <td class="p-3 font-semibold text-purple-300">Domain-Disjoint</td>
+                  <td class="p-3 text-slate-300">Random Forest</td>
+                  <td class="p-3 text-emerald-400">99.14%</td>
+                  <td class="p-3">100.00%</td>
+                  <td class="p-3">0.9957</td>
+                  <td class="p-3">0.00%</td>
+                  <td class="p-3 text-slate-400">0.08 ms</td>
+                </tr>
+                <tr>
+                  <td class="p-3 font-semibold text-purple-300">Domain-Disjoint</td>
+                  <td class="p-3 text-slate-300">Logistic Regression</td>
+                  <td class="p-3 text-emerald-400">98.60%</td>
+                  <td class="p-3">99.97%</td>
+                  <td class="p-3">0.9928</td>
+                  <td class="p-3">0.02%</td>
+                  <td class="p-3 text-slate-400">0.005 ms</td>
+                </tr>
+                <tr>
+                  <td class="p-3 text-slate-400">Random Stratified</td>
+                  <td class="p-3 text-slate-300">LightGBM</td>
+                  <td class="p-3 text-emerald-400">98.99%</td>
+                  <td class="p-3">99.94%</td>
+                  <td class="p-3">0.9946</td>
+                  <td class="p-3">0.04%</td>
+                  <td class="p-3 text-slate-400">0.01 ms</td>
+                </tr>
+                <tr>
+                  <td class="p-3 text-slate-400">Random Stratified</td>
+                  <td class="p-3 text-slate-300">Random Forest</td>
+                  <td class="p-3 text-emerald-400">99.02%</td>
+                  <td class="p-3">99.91%</td>
+                  <td class="p-3">0.9946</td>
+                  <td class="p-3">0.06%</td>
+                  <td class="p-3 text-slate-400">0.08 ms</td>
+                </tr>
+                <tr>
+                  <td class="p-3 text-slate-400">Random Stratified</td>
+                  <td class="p-3 text-slate-300">Logistic Regression</td>
+                  <td class="p-3 text-emerald-400">98.96%</td>
+                  <td class="p-3">99.88%</td>
+                  <td class="p-3">0.9942</td>
+                  <td class="p-3">0.08%</td>
+                  <td class="p-3 text-slate-400">0.005 ms</td>
+                </tr>
+                <tr class="bg-purple-950/20">
+                  <td class="p-3 font-semibold text-purple-400">Random Stratified</td>
+                  <td class="p-3 font-bold text-purple-300"><i class="fa-solid fa-atom text-purple-400 mr-1"></i> VQC (4-Qubit Sim)</td>
+                  <td class="p-3 text-amber-400">76.72%</td>
+                  <td class="p-3">99.97%</td>
+                  <td class="p-3">0.8681</td>
+                  <td class="p-3">0.01%</td>
+                  <td class="p-3 text-slate-400">0.42 ms</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -669,14 +764,14 @@
             datasets: [
               {
                 label: 'Quantum VQC',
-                data: [1.0, 1.0, 1.0, 0.0],
+                data: [0.9997, 0.7672, 0.8681, 0.0001],
                 backgroundColor: 'rgba(179, 136, 255, 0.85)',
                 borderColor: '#b388ff',
                 borderWidth: 1
               },
               {
-                label: 'Classical RF',
-                data: [1.0, 1.0, 1.0, 0.0],
+                label: 'Classical LightGBM',
+                data: [0.9997, 0.9917, 0.9957, 0.0002],
                 backgroundColor: 'rgba(0, 229, 255, 0.85)',
                 borderColor: '#00e5ff',
                 borderWidth: 1

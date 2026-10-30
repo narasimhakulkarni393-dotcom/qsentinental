@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import re
+import time
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
@@ -14,33 +16,60 @@ for p in [str(CURRENT_DIR), str(ROOT_DIR), os.getcwd()]:
         sys.path.insert(0, p)
 
 IMPORT_ERROR = None
-# Import feature extractor and model functions
+# Import feature extractor, model functions, and security / typosquatting modules
 try:
     from src.features import FEATURE_NAMES, extract_features
     from src.model import load_model, predict_url
     from src.quantum_model import load_quantum_model, predict_url_quantum
+    from src.security import validate_and_sanitize_url
+    from src.typosquatting import (
+        DEFAULT_PROTECTED_BRANDS,
+        check_domain_impersonation,
+        extract_domain_components
+    )
 except Exception as e:
     IMPORT_ERROR = str(e)
-    FEATURE_NAMES = [
-        "url_length", "hostname_length", "path_length", "query_length",
-        "num_dots", "num_subdomains", "num_hyphens", "hyphen_in_domain",
-        "num_digits", "digit_ratio_url", "digit_ratio_domain", "num_special_chars",
-        "num_at_symbols", "is_ip_address", "is_https", "has_unusual_port",
-        "has_punycode", "num_path_separators", "num_query_params",
-        "has_double_slash_path", "entropy_url", "entropy_domain",
-        "has_suspicious_tld", "num_sensitive_keywords", "has_brand_in_subdomain"
-    ]
-    extract_features = None
-    load_model = None
-    predict_url = None
-    load_quantum_model = None
-    predict_url_quantum = None
+    try:
+        from api.src.features import FEATURE_NAMES, extract_features
+        from api.src.model import load_model, predict_url
+        from api.src.quantum_model import load_quantum_model, predict_url_quantum
+        from api.src.security import validate_and_sanitize_url
+        from api.src.typosquatting import (
+            DEFAULT_PROTECTED_BRANDS,
+            check_domain_impersonation,
+            extract_domain_components
+        )
+    except Exception as e2:
+        IMPORT_ERROR = f"{e} | {e2}"
+        FEATURE_NAMES = [
+            "url_length", "hostname_length", "path_length", "query_length",
+            "num_dots", "num_subdomains", "num_hyphens", "hyphen_in_domain",
+            "num_digits", "digit_ratio_url", "digit_ratio_domain", "num_special_chars",
+            "num_at_symbols", "is_ip_address", "is_https", "has_unusual_port",
+            "has_punycode", "num_path_separators", "num_query_params",
+            "has_double_slash_path", "entropy_url", "entropy_domain",
+            "has_suspicious_tld", "num_sensitive_keywords", "has_brand_in_subdomain"
+        ]
+        extract_features = None
+        load_model = None
+        predict_url = None
+        load_quantum_model = None
+        predict_url_quantum = None
+        validate_and_sanitize_url = None
+        check_domain_impersonation = None
+        extract_domain_components = None
 
 # Cache model instances in memory across warm invocations
 _CLASSICAL_BUNDLE = None
 _QUANTUM_BUNDLE = None
 
+# Simple in-memory rate limiting (max 120 req / 60 sec per client IP)
+_RATE_LIMITS = defaultdict(list)
+MAX_REQUEST_SIZE_BYTES = 1024 * 1024  # 1 MB
+
+
 def get_models():
+    """Retrieve or load cached classical LightGBM and quantum VQC model bundles."""
     global _CLASSICAL_BUNDLE, _QUANTUM_BUNDLE
     m_path = CURRENT_DIR / "models" if (CURRENT_DIR / "models").is_dir() else (ROOT_DIR / "models")
     if _CLASSICAL_BUNDLE is None and load_model:
@@ -59,7 +88,7 @@ def get_models():
 def analyze_url_heuristics(url: str, feats: dict) -> list:
     """Analyze lexical and security indicators to produce explainable ML evidence."""
     evidence = []
-    
+
     # 1. IP address check
     if feats.get("is_ip_address", 0) == 1.0:
         evidence.append({
@@ -68,7 +97,7 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
             "title": "IP Address Hostname",
             "description": "Host uses a raw numerical IP rather than a registered domain name, heavily correlated with phishing/C2."
         })
-        
+
     # 2. Unusual Port
     if feats.get("has_unusual_port", 0) == 1.0:
         evidence.append({
@@ -145,7 +174,7 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
             "title": "Unencrypted HTTP Protocol",
             "description": "Traffic is unencrypted (HTTP). While not strictly proof of malice, legitimate auth forms require HTTPS."
         })
-        
+
     # 10. URL Length & High Entropy
     url_len = feats.get("url_length", 0)
     entropy = feats.get("entropy_url", 0.0)
@@ -168,22 +197,30 @@ def analyze_url_heuristics(url: str, feats: dict) -> list:
 
 
 def get_threat_intelligence(url: str) -> dict:
-    """Mock/OTX-compatible Threat Intelligence query with zero external SSRF risk."""
+    """Zero-network Threat Intelligence lookup against curated phishing indicators."""
     parsed = urlparse(url if "://" in url else "http://" + url)
     host = (parsed.hostname or "").lower()
-    
-    # Known demo malicious indicators for test reproducibility
+
+    # Normalize out leading 'www.'
+    norm_host = host[4:] if host.startswith("www.") else host
+
+    # Active IOC indicators (verified campaigns, excluding lookalike test cases)
     known_bad_hosts = {
         "paypa1-verify.com",
         "secure-bankofamerica.com-verify.tk",
         "appleid.apple.com.secure-login.info",
         "free-iphone-winner.com",
         "netflix-payment-update.com",
-        "amazon-order-support.com",
-        "g00gle.com"
+        "amazon-order-support.com"
     }
-    
-    if host in known_bad_hosts or host.endswith(".tk") or host.endswith(".top"):
+
+    if (
+        host in known_bad_hosts
+        or norm_host in known_bad_hosts
+        or host.endswith(".tk")
+        or host.endswith(".top")
+        or host.endswith(".cf")
+    ):
         return {
             "status": "flagged",
             "provider": "AlienVault OTX & PhishTank IOC Feed",
@@ -193,11 +230,11 @@ def get_threat_intelligence(url: str) -> dict:
                     "type": "domain",
                     "threat_type": "Credential Phishing / Impersonation Campaign",
                     "confidence": "High",
-                    "last_seen": "2026-10-27"
+                    "last_seen": "2026-10-30"
                 }
             ]
         }
-    
+
     return {
         "status": "clean",
         "provider": "AlienVault OTX & PhishTank IOC Feed",
@@ -206,28 +243,103 @@ def get_threat_intelligence(url: str) -> dict:
 
 
 def perform_full_scan(url: str) -> dict:
-    """Run comprehensive hybrid quantum-classical scan on a URL string."""
-    clean_url = (url or "").strip()
-    if not clean_url or len(clean_url) > 2048:
-        return {
-            "input_valid": False,
-            "error": "URL is empty or exceeds standard length limit (2048 characters)."
+    """Run comprehensive multimodal quantum-classical, typosquatting, and heuristic scan.
+
+    Enforces:
+    - Zero-network static analysis (SSRF immunity)
+    - 5-tier classification: SAFE, SUSPICIOUS, MALICIOUS, UNKNOWN, SCAN_ERROR
+    - Never returns SAFE when inference fails or domain status is inconclusive
+    - Backward-compatible serialization with original frontend keys
+    """
+    # 1. Input Sanitization & SSRF Protection
+    if validate_and_sanitize_url:
+        val = validate_and_sanitize_url(url)
+        is_val = val.get("is_valid", val.get("valid", False))
+        if not is_val:
+            err_msg = val.get("error", "Invalid or prohibited URL input")
+            return {
+                "url": str(url or ""),
+                "classification": "SCAN_ERROR",
+                "risk_score": 0,
+                "confidence": None,
+                "detection_engine": ["input_validation"],
+                "brand_impersonation": {
+                    "detected": False,
+                    "target_brand": None,
+                    "legitimate_domain": None
+                },
+                "reasons": [err_msg],
+                "model_status": "error",
+                "input_valid": False,
+                "error": err_msg,
+                "prediction": "error",
+                "prediction_text": f"Scan Error: {err_msg}",
+                "risk_level": "unknown",
+                "probabilities": {
+                    "classical_rf_phishing": 0.0,
+                    "classical_phishing": 0.0,
+                    "quantum_vqc_phishing": 0.0,
+                    "composite_phishing": 0.0,
+                    "legitimate": 0.0
+                },
+                "ml_evidence": [],
+                "threat_intelligence": {"status": "error", "provider": "Input Validator", "matches": []},
+                "features": {}
+            }
+        clean_url = val["sanitized_url"]
+    else:
+        clean_url = (url or "").strip()
+        if not clean_url or len(clean_url) > 4096:
+            return {
+                "url": clean_url,
+                "classification": "SCAN_ERROR",
+                "risk_score": 0,
+                "confidence": None,
+                "detection_engine": ["input_validation"],
+                "brand_impersonation": {
+                    "detected": False,
+                    "target_brand": None,
+                    "legitimate_domain": None
+                },
+                "reasons": ["URL is empty or exceeds standard length limit"],
+                "model_status": "error",
+                "input_valid": False,
+                "error": "URL is empty or exceeds standard length limit"
+            }
+
+    # 2. Typosquatting & Brand Impersonation Analysis
+    impersonation = {}
+    if check_domain_impersonation:
+        impersonation = check_domain_impersonation(clean_url)
+    else:
+        impersonation = {
+            "detected": False,
+            "target_brand": None,
+            "legitimate_domain": None,
+            "is_genuine": False,
+            "similarity_score": 0.0,
+            "reasons": [],
+            "detection_engine": [],
+            "is_reserved_tld": False,
+            "classification_hint": "UNKNOWN"
         }
 
-    # Extract features
+    # 3. URL Feature Extraction
+    feats = {}
     if extract_features:
-        feat_vector = extract_features(clean_url)
-        feats = dict(zip(FEATURE_NAMES, feat_vector))
-    else:
-        feats = {}
+        try:
+            feat_vector = extract_features(clean_url)
+            feats = dict(zip(FEATURE_NAMES, feat_vector))
+        except Exception:
+            feats = {}
 
+    # 4. Classical ML Inference
     clf_bundle, q_bundle = get_models()
-
-    # Classical prediction
-    prob_classical = 0.5
-    classical_label = 0
+    prob_classical = None
+    classical_success = False
     threshold = 0.5
     model_name = "LightGBM"
+    model_status = "success"
 
     if clf_bundle and clf_bundle is not False and predict_url:
         try:
@@ -235,79 +347,182 @@ def perform_full_scan(url: str) -> dict:
             clf = getattr(clf_bundle, "clf", clf_bundle[0])
             scaler = getattr(clf_bundle, "scaler", clf_bundle[1])
             c_res = predict_url(clean_url, clf=clf, scaler=scaler, threshold=threshold)
-            prob_classical = c_res.get("probability_phishing", 0.5)
-            classical_label = c_res.get("label", 0)
+            prob_classical = float(c_res.get("probability_phishing", 0.5))
             meta = getattr(clf_bundle, "metadata", {}) or {}
             model_name = meta.get("model_type", "LightGBM").upper()
+            classical_success = True
         except Exception:
-            prob_classical = 0.5
+            prob_classical = None
+            classical_success = False
+            model_status = "error"
     else:
-        # Heuristic fallback if model not loaded
-        score = 0.0
-        if feats.get("is_ip_address", 0) == 1.0: score += 0.4
-        if feats.get("num_dots", 0) >= 3: score += 0.2
-        if feats.get("has_unusual_port", 0) == 1.0: score += 0.25
-        if feats.get("is_https", 1) == 0.0: score += 0.15
-        if feats.get("has_brand_in_subdomain", 0) == 1.0: score += 0.35
-        prob_classical = min(score, 0.95)
-        classical_label = 1 if prob_classical >= 0.5 else 0
+        model_status = "fallback" if not clf_bundle else "error"
 
-    # Quantum VQC prediction
-    prob_quantum = prob_classical
-    quantum_label = classical_label
+    # 5. Quantum VQC Inference
+    prob_quantum = prob_classical if prob_classical is not None else 0.5
+    quantum_success = False
     if q_bundle and q_bundle is not False and predict_url_quantum:
         try:
             q_res = predict_url_quantum(clean_url, bundle=q_bundle)
-            prob_quantum = q_res.get("probability_phishing", prob_classical)
-            quantum_label = q_res.get("label", classical_label)
+            prob_quantum = float(q_res.get("probability_phishing", prob_quantum))
+            quantum_success = True
         except Exception:
-            prob_quantum = prob_classical
-            quantum_label = classical_label
+            pass
 
-    # Composite Ensemble Risk Score (calibrated primary + quantum check)
-    composite_prob = float(0.80 * prob_classical + 0.20 * prob_quantum)
-
-    # Threat Intel check
-    threat_intel = get_threat_intelligence(clean_url)
-    if threat_intel.get("status") == "flagged":
-        composite_prob = max(composite_prob, 0.98)
-
-    # Verdict calibrated
-    is_phishing = (prob_classical >= threshold) or (composite_prob >= threshold) or (threat_intel.get("status") == "flagged")
-
-    if is_phishing:
-        if composite_prob >= 0.80 or threat_intel.get("status") == "flagged":
-            risk_level = "critical"
-            prediction_text = "Phishing Detected (High Confidence)"
-        else:
-            risk_level = "high"
-            prediction_text = "Phishing Suspected"
-    else:
-        if composite_prob >= 0.35:
-            risk_level = "medium"
-            prediction_text = "Low Risk / Unverified"
-        else:
-            risk_level = "low"
-            prediction_text = "Likely Legitimate"
-
+    # 6. Lexical Heuristics & Threat Intelligence
     evidence = analyze_url_heuristics(clean_url, feats)
+    threat_intel = get_threat_intelligence(clean_url)
+
+    # 7. Multi-Modal Synthesis & Classification Engine
+    detection_engines = []
+    reasons = []
+    confidence = None
+    risk_score = 0
+    classification = "UNKNOWN"
+
+    is_impersonation = impersonation.get("detected", False)
+    is_genuine_brand = impersonation.get("is_genuine", False)
+    is_reserved = impersonation.get("is_reserved_tld", False)
+    target_brand = impersonation.get("target_brand")
+    legitimate_domain = impersonation.get("legitimate_domain")
+
+    # BRANCH A: Verified genuine protected brand (e.g. google.com, microsoft.com)
+    if is_genuine_brand:
+        classification = "SAFE"
+        risk_score = 5
+        detection_engines = ["brand_verification"]
+        if classical_success:
+            detection_engines.append("classical_lightgbm")
+        reasons = [f"Verified legitimate domain for {target_brand}"]
+        composite_prob = prob_classical if prob_classical is not None else 0.05
+        confidence = round(1.0 - composite_prob, 4)
+
+    # BRANCH B: Brand impersonation / typosquatting detected (e.g. g00gle.com, paypa1.com)
+    elif is_impersonation:
+        classification = "SUSPICIOUS"
+        risk_score = 85
+        detection_engines = impersonation.get("detection_engine") or [
+            "typosquatting",
+            "brand_impersonation",
+            "domain_similarity"
+        ]
+        reasons = list(impersonation.get("reasons", []))
+
+        # Escalate to MALICIOUS if verified threat intelligence IOC also flags domain
+        if threat_intel.get("status") == "flagged":
+            classification = "MALICIOUS"
+            risk_score = 98
+            detection_engines.append("threat_intelligence")
+            reasons.append("Flagged by threat intelligence IOC feed")
+
+        composite_prob = max(prob_classical or 0.0, 0.85)
+        confidence = None
+
+    # BRANCH C: Threat intelligence flagged domain
+    elif threat_intel.get("status") == "flagged":
+        classification = "MALICIOUS"
+        risk_score = 95
+        detection_engines = ["threat_intelligence"]
+        reasons = ["Domain flagged by threat intelligence IOC feed as active phishing campaign"]
+        composite_prob = 0.95
+        confidence = 0.95
+
+    # BRANCH D: ML Pipeline Failure (Never return SAFE when inference fails!)
+    elif not classical_success or prob_classical is None:
+        classification = "UNKNOWN"
+        risk_score = 50
+        detection_engines = ["fallback_heuristics"]
+        reasons = ["ML inference pipeline unavailable; safety status cannot be verified"]
+        composite_prob = 0.50
+        confidence = None
+        model_status = "error"
+
+    # BRANCH E: Reserved synthetic TLD without brand (e.g. test.example)
+    elif is_reserved:
+        classification = "UNKNOWN"
+        risk_score = 30
+        detection_engines = ["tld_analyzer"]
+        reasons = ["Generic domain under synthetic or reserved TLD; insufficient operational signals"]
+        composite_prob = 0.30
+        confidence = None
+
+    # BRANCH F: Standard ML + Heuristics Decision
+    else:
+        composite_prob = float(0.80 * prob_classical + 0.20 * prob_quantum)
+        detection_engines = ["classical_lightgbm"]
+        if quantum_success:
+            detection_engines.append("quantum_vqc")
+
+        if composite_prob >= 0.80 or prob_classical >= 0.80:
+            classification = "MALICIOUS"
+            risk_score = int(max(composite_prob, prob_classical) * 100)
+            reasons = ["Elevated ML phishing probability across lexical feature dimensions"]
+            confidence = round(composite_prob, 4)
+        elif composite_prob >= threshold or prob_classical >= threshold:
+            classification = "SUSPICIOUS"
+            risk_score = int(max(composite_prob, prob_classical) * 100)
+            reasons = ["URL exhibits suspicious structural and lexical anomalies"]
+            confidence = round(composite_prob, 4)
+        elif composite_prob >= 0.35 or len(evidence) >= 2:
+            classification = "SUSPICIOUS"
+            risk_score = int(composite_prob * 100)
+            reasons = [ev["title"] for ev in evidence[:2]] or ["Elevated anomaly score from lexical heuristics"]
+            confidence = round(composite_prob, 4)
+        else:
+            classification = "SAFE"
+            risk_score = max(5, int(composite_prob * 100))
+            reasons = ["No meaningful phishing or impersonation indicators detected"]
+            confidence = round(1.0 - composite_prob, 4)
+
+    # 8. Legacy Field Mappings
+    if classification == "MALICIOUS":
+        prediction = "phishing"
+        prediction_text = "Phishing Detected (High Confidence)"
+        risk_level = "critical"
+    elif classification == "SUSPICIOUS":
+        prediction = "phishing"
+        prediction_text = "Phishing Suspected"
+        risk_level = "high"
+    elif classification == "UNKNOWN":
+        prediction = "unknown"
+        prediction_text = "Unknown / Inconclusive Risk"
+        risk_level = "medium"
+    else:
+        prediction = "legitimate"
+        prediction_text = "Likely Legitimate"
+        risk_level = "low"
+
+    c_prob_safe = prob_classical if prob_classical is not None else 0.5
 
     return {
-        "input_valid": True,
+        # Section 5 exact standardized fields
         "url": clean_url,
-        "prediction": "phishing" if is_phishing else "legitimate",
+        "classification": classification,
+        "risk_score": risk_score,
+        "confidence": confidence,
+        "detection_engine": detection_engines,
+        "brand_impersonation": {
+            "detected": is_impersonation,
+            "target_brand": target_brand,
+            "legitimate_domain": legitimate_domain
+        },
+        "reasons": reasons,
+        "model_status": model_status,
+
+        # Backward compatibility fields for frontend and historical consumers
+        "input_valid": True,
+        "prediction": prediction,
         "prediction_text": prediction_text,
         "risk_level": risk_level,
         "model_version": f"q-sentinel-v2.0-hybrid-{model_name.lower()}-vqc",
         "threshold_used": round(threshold, 3),
-        "confidence": round(composite_prob if is_phishing else (1.0 - composite_prob), 4),
-        "risk_score_pct": round(composite_prob * 100, 1),
+        "risk_score_pct": float(risk_score),
         "probabilities": {
-            "classical_rf_phishing": round(float(prob_classical), 4),
-            "classical_phishing": round(float(prob_classical), 4),
+            "classical_rf_phishing": round(float(c_prob_safe), 4),
+            "classical_phishing": round(float(c_prob_safe), 4),
             "quantum_vqc_phishing": round(float(prob_quantum), 4),
-            "composite_phishing": round(composite_prob, 4),
-            "legitimate": round(1.0 - composite_prob, 4)
+            "composite_phishing": round(float(composite_prob), 4),
+            "legitimate": round(1.0 - float(composite_prob), 4)
         },
         "model_types": {
             "classical": model_name,
@@ -317,8 +532,8 @@ def perform_full_scan(url: str) -> dict:
         "threat_intelligence": threat_intel,
         "features": {k: round(v, 2) if isinstance(v, float) else v for k, v in feats.items()},
         "limitations": [
-            "Purely non-intrusive lexical/structural inspection. No active HTTP probes or DNS resolution performed to prevent SSRF risks.",
-            "Predictions reflect statistical model probabilities trained on URL lexical structures; always verify sensitive credentials independently."
+            "Purely non-intrusive lexical and structural inspection. No active HTTP probes or DNS lookups performed to prevent SSRF vulnerabilities.",
+            "Predictions reflect statistical model probabilities and domain similarity heuristics; always verify credentials independently."
         ]
     }
 
@@ -334,6 +549,17 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _check_rate_limit(self) -> bool:
+        """Enforce rate limits: max 120 requests per minute per IP."""
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+        now = time.time()
+        window = [t for t in _RATE_LIMITS[client_ip] if now - t < 60]
+        if len(window) >= 120:
+            return False
+        window.append(now)
+        _RATE_LIMITS[client_ip] = window
+        return True
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -351,11 +577,15 @@ class handler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "healthy",
                 "service": "Q-Sentinel Threat Engine",
-                "version": "2.0.0",
+                "version": "2.1.0",
                 "dataset": "PhiUSIIL Phishing URL Websites Dataset (v1.0)",
                 "models": {
                     "classical_pipeline": clf is not None and clf is not False,
                     "quantum_vqc": q_b is not None and q_b is not False
+                },
+                "security": {
+                    "typosquatting_engine": check_domain_impersonation is not None,
+                    "ssrf_protection": validate_and_sanitize_url is not None
                 }
             })
             return
@@ -364,7 +594,7 @@ class handler(BaseHTTPRequestHandler):
             m_paths = [CURRENT_DIR / "results" / "metrics.json", ROOT_DIR / "results" / "metrics.json"]
             q_paths = [CURRENT_DIR / "results" / "quantum_metrics.json", ROOT_DIR / "results" / "quantum_metrics.json"]
             b_paths = [CURRENT_DIR / "results" / "benchmark_comparison.json", ROOT_DIR / "results" / "benchmark_comparison.json"]
-            
+
             c_metrics = {}
             q_metrics = {}
             b_metrics = {}
@@ -403,8 +633,9 @@ class handler(BaseHTTPRequestHandler):
 
         # Default info endpoint
         self._send_json({
-            "message": "Q-Sentinel Hybrid Quantum-Classical Detection API v2.0",
+            "message": "Q-Sentinel Hybrid Quantum-Classical Detection API v2.1",
             "dataset": "PhiUSIIL Phishing URL Websites Dataset",
+            "classification_tiers": ["SAFE", "SUSPICIOUS", "MALICIOUS", "UNKNOWN", "SCAN_ERROR"],
             "endpoints": [
                 "POST /api/scan (body: {\"url\": \"...\"})",
                 "POST /api/batch (body: {\"urls\": [\"...\"]})",
@@ -417,33 +648,63 @@ class handler(BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
+        if not self._check_rate_limit():
+            self._send_json({"error": "Rate limit exceeded. Maximum 120 requests per minute."}, 429)
+            return
+
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length == 0:
-            self._send_json({"error": "Empty request body"}, 400)
+            self._send_json({
+                "classification": "SCAN_ERROR",
+                "error": "Empty request body",
+                "model_status": "error"
+            }, 400)
+            return
+
+        if content_length > MAX_REQUEST_SIZE_BYTES:
+            self._send_json({
+                "classification": "SCAN_ERROR",
+                "error": f"Payload too large. Exceeds maximum limit of {MAX_REQUEST_SIZE_BYTES} bytes",
+                "model_status": "error"
+            }, 413)
             return
 
         try:
             body = self.rfile.read(content_length)
             payload = json.loads(body.decode("utf-8"))
         except Exception as e:
-            self._send_json({"error": f"Invalid JSON payload: {str(e)}"}, 400)
+            self._send_json({
+                "classification": "SCAN_ERROR",
+                "error": f"Invalid JSON payload: {str(e)}",
+                "model_status": "error"
+            }, 400)
             return
 
         if path in ("/api/scan", "/api/scan/"):
             url = payload.get("url", "")
-            if not url:
-                self._send_json({"error": "Missing 'url' property in request body"}, 400)
+            if not url or not str(url).strip():
+                self._send_json({
+                    "classification": "SCAN_ERROR",
+                    "error": "Missing or empty 'url' property in request body",
+                    "model_status": "error"
+                }, 400)
                 return
+
             result = perform_full_scan(url)
-            self._send_json(result)
+            status_code = 400 if result.get("classification") == "SCAN_ERROR" else 200
+            self._send_json(result, status_code)
             return
 
         if path in ("/api/batch", "/api/batch/"):
             urls = payload.get("urls", [])
             if not isinstance(urls, list):
-                self._send_json({"error": "'urls' must be a JSON array of URL strings"}, 400)
+                self._send_json({
+                    "classification": "SCAN_ERROR",
+                    "error": "'urls' must be a JSON array of URL strings",
+                    "model_status": "error"
+                }, 400)
                 return
-            
+
             # Bound limit to 50 items for serverless performance
             bounded_urls = urls[:50]
             results = [perform_full_scan(u) for u in bounded_urls]

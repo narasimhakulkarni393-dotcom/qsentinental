@@ -17,15 +17,21 @@ class handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8"))
         except Exception:
             payload = {}
-        
+
         url = payload.get("url", "")
-        if not url:
-            res_body = json.dumps({"error": "Missing 'url' parameter"}).encode("utf-8")
+        if not url or not str(url).strip():
+            res = {
+                "classification": "SCAN_ERROR",
+                "error": "Missing or empty 'url' parameter",
+                "model_status": "error"
+            }
+            res_body = json.dumps(res, indent=2).encode("utf-8")
             self.send_response(400)
         else:
             result = perform_full_scan(url)
+            status_code = 400 if result.get("classification") == "SCAN_ERROR" else 200
             res_body = json.dumps(result, indent=2).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status_code)
 
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")

@@ -20,17 +20,22 @@ class handler(BaseHTTPRequestHandler):
 
         urls = payload.get("urls", [])
         if not isinstance(urls, list):
-            urls = []
-        
-        bounded = urls[:50]
-        results = [perform_full_scan(u) for u in bounded]
-        res_body = json.dumps({
-            "count": len(results),
-            "total_requested": len(urls),
-            "results": results
-        }, indent=2).encode("utf-8")
+            res_body = json.dumps({
+                "classification": "SCAN_ERROR",
+                "error": "'urls' must be a JSON array of URL strings",
+                "model_status": "error"
+            }, indent=2).encode("utf-8")
+            self.send_response(400)
+        else:
+            bounded = urls[:50]
+            results = [perform_full_scan(u) for u in bounded]
+            res_body = json.dumps({
+                "count": len(results),
+                "total_requested": len(urls),
+                "results": results
+            }, indent=2).encode("utf-8")
+            self.send_response(200)
 
-        self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(res_body)))
